@@ -1,0 +1,118 @@
+-- ============================================
+-- Fraud & Anomaly Detection Analysis
+-- Author: Simran Anand | Date: 12th April 2026
+-- Dataset: PaySim 6.3M synthetic transactions
+-- Tool: DB Browser for SQLite
+-- ============================================
+
+-- QUERY 1: Statistical baseline by transaction type
+-- Purpose: Establish normal transaction behaviour before flagging anomalies
+-- Finding: 100% of fraud concentrated in TRANSFER and CASH_OUT only
+
+SELECT 
+    type,
+    COUNT(*) AS txn_count,
+    ROUND(AVG(amount), 2) AS avg_amount,
+    ROUND(MAX(amount), 2) AS max_amount,
+    SUM(isFraud) AS confirmed_fraud,
+    ROUND(100.0 * SUM(isFraud) / COUNT(*), 3) AS fraud_rate_pct
+FROM transactions
+GROUP BY type
+ORDER BY txn_count DESC;
+
+-- ============================================
+-- QUERY 2: Large transaction outlier detection
+-- Purpose: Flag transactions > 3 standard deviations above type mean
+-- Threshold defined prior to data exploration
+-- Finding: 14,602 flagged, 1,920 confirmed fraud, 13.15% precision (102x baseline)
+
+WITH stats AS (
+    SELECT 
+        type,
+        AVG(amount) AS mean_amt,
+        AVG(amount * amount) - AVG(amount) * AVG(amount) AS variance
+    FROM transactions
+    WHERE type IN ('TRANSFER', 'CASH_OUT')
+    GROUP BY type
+),
+flagged AS (
+    SELECT 
+        t.type,
+        t.amount,
+        t.isFraud,
+        s.mean_amt,
+        ROUND((t.amount - s.mean_amt) / SQRT(s.variance), 2) AS z_score
+    FROM transactions t
+    JOIN stats s ON t.type = s.type
+    WHERE t.type IN ('TRANSFER', 'CASH_OUT')
+    AND t.amount > (s.mean_amt + 3 * SQRT(s.variance))
+)
+SELECT 
+    COUNT(*) AS total_flagged,
+    SUM(isFraud) AS confirmed_fraud,
+    ROUND(100.0 * SUM(isFraud) / COUNT(*), 2) AS precision_pct
+FROM flagged;
+
+-- ============================================
+-- QUERY 3: Payee concentration analysis
+-- Purpose: Identify recipients receiving disproportionate share of total value
+-- Finding: No concentration pattern — fraud distributed across many recipients
+
+SELECT 
+    nameDest,
+    COUNT(*) AS num_txns,
+    ROUND(SUM(amount), 2) AS total_received,
+    ROUND(100.0 * SUM(amount) / 
+        (SELECT SUM(amount) FROM transactions), 4) AS pct_of_total,
+    SUM(isFraud) AS fraud_txns,
+    ROUND(100.0 * SUM(isFraud) / COUNT(*), 2) AS fraud_rate_pct
+FROM transactions
+WHERE type IN ('TRANSFER', 'CASH_OUT')
+GROUP BY nameDest
+ORDER BY total_received DESC
+LIMIT 25;
+
+-- ============================================
+-- QUERY 4: Timing anomaly analysis
+-- Purpose: Test whether fraud concentrates during off-hours
+-- Threshold: Off-hours defined as 22:00-06:00 (step % 24 between 22-23 or 0-6)
+-- Finding: Off-hours fraud rate 0.5954% vs 0.0937% business hours (6.4x higher)
+
+SELECT 
+    CASE 
+        WHEN (step % 24) BETWEEN 6 AND 21 
+        THEN 'Business hours (06-22)'
+        ELSE 'Off-hours (22-06)'
+    END AS time_period,
+    COUNT(*) AS total_txns,
+    SUM(isFraud) AS fraud_count,
+    ROUND(100.0 * SUM(isFraud) / COUNT(*), 4) AS fraud_rate_pct
+FROM transactions
+GROUP BY time_period;
+
+-- ============================================
+-- QUERY 5: Near-duplicate payment detection
+-- Purpose: Find same sender/recipient/amount within 24 hours (layering pattern)
+-- Finding: Zero matches in synthetic dataset — pattern not present in PaySim
+
+SELECT 
+    a.nameOrig,
+    a.nameDest,
+    a.type,
+    a.amount AS amount_1,
+    b.amount AS amount_2,
+    a.step AS step_1,
+    b.step AS step_2,
+    (b.step - a.step) AS hours_apart,
+    a.isFraud AS fraud_1,
+    b.isFraud AS fraud_2
+FROM transactions_sample a
+JOIN transactions_sample b
+    ON  a.nameOrig = b.nameOrig
+    AND a.nameDest = b.nameDest
+    AND ABS(a.amount - b.amount) < 1
+    AND b.step > a.step
+    AND (b.step - a.step) <= 24
+WHERE a.type IN ('TRANSFER', 'CASH_OUT')
+ORDER BY a.nameOrig, a.step
+LIMIT 500;
