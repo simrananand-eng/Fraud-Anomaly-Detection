@@ -28,5 +28,7 @@ Kaggle PaySim Synthetic Financial Transactions — 6,362,620 rows
 ## Recommended Controls
 - Automated hold on TRANSFER and CASH_OUT transactions exceeding 
   3 standard deviations above type mean
+  ## Live Dashboard
+[View interactive dashboard](https://datastudio.google.com/reporting/1ab80814-0646-4ace-ab5b-a82cd32dc1f0)
 - Step-up authentication for transactions initiated between 22:00–06:00
 - Near-duplicate payment detection rule for production deployment
